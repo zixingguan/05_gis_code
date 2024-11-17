@@ -138,7 +138,193 @@ Qcount <- BluePlaquesSub.ppp %>%
   dplyr::count(Var1=Freq)%>%
   dplyr::rename(Freqquadratcount=n)
 
+#检查第一列的数据类型——如果它是factor，我们需要将其转换为数字
 
+Qcount %>% 
+  summarise_all(class)
+
+#接下来我们需要计算我们的预期值，基于泊松分布计算预期概率的公式
+sums <- Qcount %>%
+  #calculate the total blue plaques (Var * Freq)
+  mutate(total = Var1 * Freqquadratcount) %>%
+  dplyr::summarise(across(everything(), sum))%>%
+  dplyr::select(-Var1) 
+
+lambda<- Qcount%>%
+  #calculate lambda
+  mutate(total = Var1 * Freqquadratcount)%>%
+  dplyr::summarise(across(everything(), sum)) %>%
+  mutate(lambda=total/Freqquadratcount) %>%
+  dplyr::select(lambda)%>%
+  pull(lambda)
+
+#使用泊松公式计算预期值。k是正方形中计数的蓝色斑块的数量，位于我们表格的第一列…
+QCountTable <- Qcount %>%
+  mutate(Pr=((lambda^Var1)*exp(-lambda))/factorial(Var1))%>%
+  #now calculate the expected counts based on our total number of plaques
+  #and save them to the table 现在根据斑块总数计算预期计数#并将其保存到mutate表中
+  mutate(Expected= (round(Pr * sums$Freqquadratcount, 0)))
+
+#Compare the frequency distributions of the observed and expected point patterns
+#比较观察到的和预期的点模式的频率分布
+plot(c(1,5),c(0,14), type="n",
+     xlab="Number of Blue Plaques (Red=Observed,Blue=Expected)", 
+     ylab="Frequency of Occurances")
+points(QCountTable$Freqquadratcount, 
+       col="Red", 
+       type="o", 
+       lwd=3)
+points(QCountTable$Expected, col="Blue", 
+       type="o", 
+       lwd=3)
+
+#我们可以观察到，它们在下端都有更高的频率计数，这让人想起泊松分布。
+#这可能表明，对于这组特定的象限，我们的模式接近完全空间随机性（即没有点的聚类或分散）。
+
+#但我们如何确认这一点？
+#为了确认，我们可以使用内置于spatstat中的quadrat.test（）函数。
+#这使用卡方检验来比较每个象限的观察频率和预期频率（而不是我们上面计算的象限箱）。
+#卡方检验确定两个分类变量之间是否存在关联。卡方值越高，差异越大。
+#如果我们的卡方检验的p值<0.05，那么我们可以拒绝一个零假设，
+#即“我们的数据中没有模式，即完全的空间随机性”
+#（将零假设视为与我们的数据显示模式的假设相反）。
+
+#我们需要寻找的是p>0.05的值。如果我们的p值>0.05，那么这表明我们有CSR，
+#我们的点没有模式。如果它小于0.05，则表明我们的点确实有聚类。
+teststats <- quadrat.test(BluePlaquesSub.ppp, nx = 6, ny = 6)
+#会有一个警告：— 一些观察到的计数非常小（0），这可能会影响象限检验的准确性。
+#nx和ny可以改变，是规定n*n个网格分析
+
+plot(BluePlaquesSub.ppp,pch=16,cex=0.5, main="Blue Plaques in Harrow")
+plot(teststats, add=T, col = "purple")
+#在新的图中，我们可以看到每个象限的三个数字。左上角的数字是观察到的点数；
+#右上角是泊松期望点数；
+#底部的值是残差值（也称为皮尔逊残差值），或 (观察值 - 预期值) / Sqrt(预期值)。
+
+
+# Ripley’s K
+#解决二次分析局限性的一种方法是将观察到的点分布与一系列不同距离半径的泊松随机模
+#型进行比较。这就是 Ripley 的 K 函数所计算的。
+K <- BluePlaquesSub.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+
+Kval <- as.data.frame(Kest(BluePlaquesSub.ppp, correction = "Ripley"))
+#当 K 值高于该线时，数据似乎在该距离处聚集。当 K 值低于该线时，数据分散。
+#从图中我们可以看到，直到距离约 1300 米时，蓝色斑块似乎聚集在哈罗，
+#然而，在约 1500 米处，分布似乎是随机的，然后在约 1600 至 2100 米之间分散。
+
+#基于密度的噪声应用空间聚类：DBSCAN
+#Quadrat 和 Ripley 的 K 分析是有用的探索性技术，可以告诉我们点数据中是否存在空间聚类，
+#但它们无法告诉我们聚类发生在我们感兴趣的区域中的哪个位置。
+#要发现这一点，我们需要使用替代技术。
+#一种用于在空间（无论是物理空间还是变量空间）中发现聚类的流行技术是 DBSCAN
+library(fpc)
+
+
+#first check the coordinate reference system of the Harrow spatial polygon:
+st_geometry(BoroughMap)
+
+#DBSCAN 要求您输入两个参数：
+#1. Epsilon - 这是算法搜索聚类的半径 2. MinPts - 这是应被视为聚类的最小点数
+
+#根据之前 Ripley's K 分析的结果，我们可以看到，我们得到的聚类半径约为 1200 米，
+#图中最大的凸起处约为 700 米。
+#因此，700 米可能是一个不错的起点，我们将从搜索至少 4 个点的聚类开始……
+#first extract the points from the spatial points data frame 首先从空间点数据帧中提取点
+BluePlaquesSubPoints <- BluePlaquesSub %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+db <- BluePlaquesSubPoints %>%
+  fpc::dbscan(.,eps = 700, MinPts = 4)
+
+#now plot the results
+plot(db, BluePlaquesSubPoints, main = "DBSCAN Output", frame = F)
+plot(BoroughMap$geometry, add=T)
+
+# used to find suitable eps value based on the knee in plot
+# k is no of nearest neighbours used, use min points
+#用于根据图k中的knee找到合适的eps值。如果没有使用最近邻，请使用最小值
+library(dbscan)
+
+BluePlaquesSubPoints%>%
+  dbscan::kNNdistplot(.,k=4)
+#此图显示每个点到 k 个邻居的平均距离，然后按升序绘制。
+#拐点是此值（到邻居的距离）增加的地方。
+#DBSCAN 分析表明，对于这些 eps 和 MinPts 值，我正在分析的区域中有三个聚类。
+
+
+
+#上面的图有点基础，看起来不太美观。用ggplot2来生成更酷的地图……
+library(ggplot2)
+#我们的新 db 对象包含大量信息，包括每组点坐标所属的群集，
+#该点是种子点还是边界点等。我们只需调用对象即可获得摘要
+db
+#如果你在 RStudio 的环境窗口中打开该对象，你还将看到对象中的各种插槽，包括集群
+db$cluster
+#将这个集群成员信息添加回我们的数据框中
+BluePlaquesSubPoints<- BluePlaquesSubPoints %>%
+  mutate(dbcluster=db$cluster)
+#创建一些凸包多边形来包裹我们聚类中的点。
+chulls <- BluePlaquesSubPoints %>%
+  group_by(dbcluster) %>%
+  dplyr::mutate(hull = 1:n(),
+                hull = factor(hull, chull(coords.x1, coords.x2)))%>%
+  arrange(hull)
+#chulls2 <- ddply(BluePlaquesSubPoints, .(dbcluster), 
+#  function(df) df[chull(df$coords.x1, df$coords.x2), ])
+
+#由于 0 实际上不是一个聚类（它是所有不属于聚类的点），因此将其从数据框中删除
+chulls <- chulls %>%
+  filter(dbcluster >=1)
+
+# ggplot2根据我们的数据创建一个对象
+dbplot <- ggplot(data=BluePlaquesSubPoints, 
+                 aes(coords.x1,coords.x2, colour=dbcluster, fill=dbcluster)) 
+#add the points in
+dbplot <- dbplot + geom_point()
+#now the convex hulls
+dbplot <- dbplot + geom_polygon(data = chulls, 
+                                aes(coords.x1,coords.x2, group=dbcluster), 
+                                alpha = 0.5) 
+#now plot, setting the coordinates to scale correctly and as a black and white plot 
+#(just for the hell of it)...
+dbplot + theme_bw() + coord_equal()
+
+
+#添加底图
+##First get the bbox in lat long for Harrow
+HarrowWGSbb <- Harrow %>%
+  st_transform(., 4326)%>%
+  st_bbox()
+
+#将底图转换为英国国家网格
+library(OpenStreetMap)
+
+basemap <- OpenStreetMap::openmap(c(51.5549876,-0.4040502),c(51.6405356,-0.2671315),
+                                  zoom=NULL,
+                                  "osm")
+
+# convert the basemap to British National Grid
+basemap_bng <- openproj(basemap, projection="+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +nadgrids=OSTN15_NTv2_OSGBtoETRS.gsb +units=m +no_defs +type=crs")
+#请注意，这个长字符串是英国国家电网（EPSG 27700）的PROJ4。
+#在过去，我们可以指定“+init=epsg:27700”。然而，现在我们必须在EPSG网站上找到PROJ4
+#网址：https://epsg.io/27700
+
+#绘制带有聚类的精美地图
+#autoplot(basemap_bng) sometimes works
+autoplot.OpenStreetMap(basemap_bng)+ 
+  geom_point(data=BluePlaquesSubPoints, 
+             aes(coords.x1,coords.x2, 
+                 colour=dbcluster, 
+                 fill=dbcluster)) + 
+  geom_polygon(data = chulls, 
+               aes(coords.x1,coords.x2, 
+                   group=dbcluster,
+                   fill=dbcluster), 
+               alpha = 0.5)  
 
 
 
