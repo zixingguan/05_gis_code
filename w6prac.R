@@ -211,8 +211,6 @@ K <- BluePlaquesSub.ppp %>%
 
 Kval <- as.data.frame(Kest(BluePlaquesSub.ppp, correction = "Ripley"))
 #当 K 值高于该线时，数据似乎在该距离处聚集。当 K 值低于该线时，数据分散。
-#从图中我们可以看到，直到距离约 1300 米时，蓝色斑块似乎聚集在哈罗，
-#然而，在约 1500 米处，分布似乎是随机的，然后在约 1600 至 2100 米之间分散。
 
 #基于密度的噪声应用空间聚类：DBSCAN
 #Quadrat 和 Ripley 的 K 分析是有用的探索性技术，可以告诉我们点数据中是否存在空间聚类，
